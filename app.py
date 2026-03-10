@@ -10,20 +10,18 @@ warnings.filterwarnings("ignore")
 # 1. KONFIGURASI HALAMAN
 st.set_page_config(page_title="Grand Mitra - Full Control Analytics", layout="wide")
 
-# --- KONFIGURASI URL GITHUB (PASTIKAN MENGGUNAKAN LINK RAW) ---
+# --- KONFIGURASI URL GITHUB ---
 URL_OMSET = "https://raw.githubusercontent.com/grandmitra/gmbdashboard/main/omset.parquet"
 URL_STOK = "https://raw.githubusercontent.com/grandmitra/gmbdashboard/main/stok.parquet"
 
-# 2. FUNGSI LOAD DATA (OPTIMASI PARQUET & ROBUST CLEANING)
+# 2. FUNGSI LOAD DATA
 @st.cache_data(ttl=3600)
 def load_and_prepare_data():
     try:
-        # Membaca file Parquet
         df_sales = pd.read_parquet(URL_OMSET)
         df_stock = pd.read_parquet(URL_STOK)
         
-        # --- PEMBERSIHAN NAMA KOLOM ---
-        # Menghapus spasi di awal/akhir dan mengubah semua jadi HURUF BESAR agar konsisten
+        # Pembersihan Nama Kolom
         df_sales.columns = [c.strip().upper() for c in df_sales.columns]
         df_stock.columns = [c.strip().upper() for c in df_stock.columns]
         
@@ -34,35 +32,38 @@ def load_and_prepare_data():
     if df_sales.empty: 
         return pd.DataFrame(), pd.DataFrame()
 
-    # Pastikan ITEM_NO tetap string dan bersih dari angka desimal (.0)
+    # Normalisasi ITEM_NO
     for df in [df_sales, df_stock]:
         if 'ITEM_NO' in df.columns:
             df['ITEM_NO'] = df['ITEM_NO'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 
-    # 1. Mapping Hierarki (GROUP_NAME1-4 ke DEPT-BRAND)
+    # 1. Mapping Hierarki & PIC
     map_h = {'GROUP_NAME1': 'DEPT', 'GROUP_NAME2': 'DIV', 'GROUP_NAME3': 'KAT', 'GROUP_NAME4': 'BRAND'}
     for old, new in map_h.items():
         if old in df_stock.columns:
             df_stock[new] = df_stock[old].fillna('UNKNOWN').astype(str).str.strip()
         else:
             df_stock[new] = 'UNKNOWN'
+    
+    # Pastikan Kolom PIC bersih
+    if 'PIC' in df_stock.columns:
+        df_stock['PIC'] = df_stock['PIC'].fillna('NO PIC').astype(str).str.strip()
+    else:
+        df_stock['PIC'] = 'NO PIC'
 
-    # 2. Sinkronisasi Balance & Aging
+    # 2. Sinkronisasi Data Numerik
     if 'BALANCE_QTY' in df_stock.columns:
         df_stock['BALANCE_QTY'] = pd.to_numeric(df_stock['BALANCE_QTY'], errors='coerce').fillna(0)
-    else:
-        df_stock['BALANCE_QTY'] = 0
-
     if 'AGING' in df_stock.columns:
         df_stock['AGING'] = pd.to_numeric(df_stock['AGING'], errors='coerce').fillna(0).astype(int)
-    else:
-        df_stock['AGING'] = 0
 
-    # 3. Merge Hierarki dari Stok ke Sales
-    stok_ref = df_stock[['ITEM_NO', 'DEPT', 'DIV', 'KAT', 'BRAND']].drop_duplicates('ITEM_NO')
-    for c in ['DEPT', 'DIV', 'KAT', 'BRAND']:
-        if c in df_sales.columns: 
-            df_sales = df_sales.drop(columns=[c])
+    # 3. Merge Hierarki & PIC dari Stok ke Sales
+    # Kita ambil PIC juga agar bisa difilter di data penjualan
+    stok_ref = df_stock[['ITEM_NO', 'DEPT', 'DIV', 'KAT', 'BRAND', 'PIC']].drop_duplicates('ITEM_NO')
+    
+    # Hapus kolom lama di sales jika ada agar tidak double saat merge
+    cols_to_drop = ['DEPT', 'DIV', 'KAT', 'BRAND', 'PIC']
+    df_sales = df_sales.drop(columns=[c for c in cols_to_drop if c in df_sales.columns])
     
     df_sales = pd.merge(df_sales, stok_ref, on='ITEM_NO', how='left')
 
@@ -81,98 +82,90 @@ def load_and_prepare_data():
 
     return df_sales, df_stock
 
-# 3. LOGIKA DASHBOARD
+# 3. ANTARMUKA (UI)
 try:
     df_s, df_stk = load_and_prepare_data()
 
     if not df_s.empty:
-        # --- SIDEBAR: SEMUA FILTER ---
+        # --- SIDEBAR FILTERS ---
         if st.sidebar.button("🔄 Reset Semua Filter"):
             st.rerun()
 
         st.sidebar.divider()
-        st.sidebar.header("🔎 Pencarian Cepat")
+        st.sidebar.header("🔎 Pencarian")
         search_q = st.sidebar.text_input("Cari Nama Barang:", "").strip().upper()
 
-        st.sidebar.header("🧾 Filter Transaksi")
+        st.sidebar.header("🧾 Filter Utama")
         list_tahun = sorted(df_s['TAHUN'].unique(), reverse=True)
         sel_tahun = st.sidebar.multiselect("Tahun:", list_tahun, default=list_tahun[:1])
 
-        # Filter Hierarki Dependent
+        # Filter PIC (Ditambahkan di sini)
+        list_pic = sorted(df_stk['PIC'].unique())
+        sel_pic = st.sidebar.multiselect("👤 Filter PIC:", list_pic)
+
         st.sidebar.header("🏗️ Hierarki Produk")
-        list_dept = sorted([x for x in df_stk['DEPT'].unique() if x != 'UNKNOWN'])
+        # Filter Dept (Bisa dipengaruhi oleh PIC)
+        stk_pic = df_stk[df_stk['PIC'].isin(sel_pic)] if sel_pic else df_stk
+        list_dept = sorted([x for x in stk_pic['DEPT'].unique() if x != 'UNKNOWN'])
         sel_dept = st.sidebar.multiselect("1. DEPT:", list_dept)
 
-        stk_div = df_stk[df_stk['DEPT'].isin(sel_dept)] if sel_dept else df_stk
+        stk_div = stk_pic[stk_pic['DEPT'].isin(sel_dept)] if sel_dept else stk_pic
         sel_div = st.sidebar.multiselect("2. DIV:", sorted([x for x in stk_div['DIV'].unique() if x != 'UNKNOWN']))
 
-        stk_kat = stk_div[stk_div['DIV'].isin(sel_div)] if sel_div else stk_div
-        sel_kat = st.sidebar.multiselect("3. KAT:", sorted([x for x in stk_kat['KAT'].unique() if x != 'UNKNOWN']))
-
-        # --- APPLY FILTERS ---
+        # --- APPLY ALL FILTERS ---
         df_f = df_s.copy()
         stk_f = df_stk.copy()
 
-        if search_q: 
-            df_f = df_f[df_f['ITEM_NAME'].str.contains(search_q, na=False, case=False)]
-        if sel_tahun: 
-            df_f = df_f[df_f['TAHUN'].isin(sel_tahun)]
+        if search_q: df_f = df_f[df_f['ITEM_NAME'].str.contains(search_q, na=False, case=False)]
+        if sel_tahun: df_f = df_f[df_f['TAHUN'].isin(sel_tahun)]
+        if sel_pic: 
+            df_f = df_f[df_f['PIC'].isin(sel_pic)]
+            stk_f = stk_f[stk_f['PIC'].isin(sel_pic)]
         if sel_dept: 
             df_f, stk_f = df_f[df_f['DEPT'].isin(sel_dept)], stk_f[stk_f['DEPT'].isin(sel_dept)]
         if sel_div: 
             df_f, stk_f = df_f[df_f['DIV'].isin(sel_div)], stk_f[stk_f['DIV'].isin(sel_div)]
-        if sel_kat: 
-            df_f, stk_f = df_f[df_f['KAT'].isin(sel_kat)], stk_f[stk_f['KAT'].isin(sel_kat)]
 
         # --- DASHBOARD UI ---
-        st.title("📊 Grand Mitra - Sales & Inventory Analytics")
-        st.caption(f"Update Terakhir: {pd.Timestamp.now().strftime('%d %B %Y %H:%M')}")
+        st.title("📊 Grand Mitra Analytics")
+        st.caption(f"Filter Aktif: {len(df_f):,} baris data ditemukan")
         
         sku_ready = int(stk_f[stk_f['BALANCE_QTY'] > 0]['ITEM_NO'].nunique())
 
-        # Metric Cards (Responsive Layout)
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("SKU Ready", f"{sku_ready:,.0f}")
         c2.metric("SKU Terjual", f"{df_f['ITEM_NO'].nunique():,.0f}")
         c3.metric("Total Margin", f"Rp {df_f['MARGIN_VALUE'].sum():,.0f}")
         c4.metric("Avg GM %", f"{df_f['GM_PCT'].mean():.2f}%")
 
-        # --- GRAPH: TREN OMSET & MARGIN ---
-        st.subheader("📈 Tren Performa Bulanan")
-        timeline = df_f.groupby('BULAN_TAHUN').agg({'NET_AMOUNT': 'sum', 'ITEM_NO': 'nunique', 'GM_PCT': 'mean'}).reset_index()
-        
+        # --- GRAPH ---
+        st.subheader("📈 Performa Penjualan")
+        timeline = df_f.groupby('BULAN_TAHUN').agg({'NET_AMOUNT': 'sum', 'GM_PCT': 'mean'}).reset_index()
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         fig.add_trace(go.Bar(x=timeline['BULAN_TAHUN'].astype(str), y=timeline['NET_AMOUNT']/1_000_000, name="Omset (Juta)", marker_color='#2c3e50', opacity=0.6), secondary_y=False)
-        fig.add_trace(go.Scatter(x=timeline['BULAN_TAHUN'].astype(str), y=timeline['GM_PCT'], name="GM %", mode='lines+markers', line=dict(color='#27ae60', dash='dot')), secondary_y=True)
-        
-        fig.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        fig.add_trace(go.Scatter(x=timeline['BULAN_TAHUN'].astype(str), y=timeline['GM_PCT'], name="GM %", mode='lines+markers', line=dict(color='#27ae60')), secondary_y=True)
+        fig.update_layout(height=350, margin=dict(l=0, r=0, t=30, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         st.plotly_chart(fig, use_container_width=True)
 
         # --- PARETO TABLE ---
-        st.subheader("🎯 Analisis Pareto & Profitability")
-        pareto = df_f.groupby(["ITEM_NO", "ITEM_NAME"]).agg({
+        st.subheader("🎯 Tabel Analisis (By PIC & Item)")
+        pareto = df_f.groupby(["ITEM_NO", "ITEM_NAME", "PIC"]).agg({
             'QTY': 'sum', 'NET_AMOUNT': 'sum', 'MARGIN_VALUE': 'sum', 'GM_PCT': 'mean'
         }).sort_values("NET_AMOUNT", ascending=False).reset_index()
 
         stk_info = stk_f[['ITEM_NO', 'BALANCE_QTY', 'AGING']].drop_duplicates('ITEM_NO')
         pareto = pd.merge(pareto, stk_info, on='ITEM_NO', how='left')
 
-        total_s = pareto['NET_AMOUNT'].sum()
-        if total_s > 0:
-            pareto['KUMULATIF_%'] = (pareto['NET_AMOUNT'] / total_s).cumsum() * 100
-            pareto['KELAS'] = pareto['KUMULATIF_%'].apply(lambda x: "⭐ A" if x <= 80 else "📦 B")
-        
-        # Formatting untuk tampilan tabel
+        # Formatting Tabel
         p_disp = pareto.copy()
-        for c in ['NET_AMOUNT', 'MARGIN_VALUE']: 
-            p_disp[c] = p_disp[c].map('{:,.0f}'.format)
+        for c in ['NET_AMOUNT', 'MARGIN_VALUE']: p_disp[c] = p_disp[c].map('{:,.0f}'.format)
         p_disp['GM_PCT'] = p_disp['GM_PCT'].map('{:.2f}%'.format)
         
-        st.dataframe(p_disp[['KELAS', 'ITEM_NO', 'ITEM_NAME', 'QTY', 'BALANCE_QTY', 'NET_AMOUNT', 'MARGIN_VALUE', 'GM_PCT', 'AGING']], 
+        st.dataframe(p_disp[['ITEM_NO', 'ITEM_NAME', 'PIC', 'QTY', 'BALANCE_QTY', 'NET_AMOUNT', 'MARGIN_VALUE', 'GM_PCT', 'AGING']], 
                      use_container_width=True, hide_index=True)
 
     else:
-        st.warning("Data kosong atau filter tidak sesuai.")
+        st.warning("Data tidak ditemukan untuk filter ini.")
 
 except Exception as e:
     st.error(f"Sistem Error: {e}")
