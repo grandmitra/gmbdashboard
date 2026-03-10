@@ -12,8 +12,8 @@ st.set_page_config(page_title="Grand Mitra - Online Analytics", layout="wide")
 
 # --- MASUKKAN LINK RAW GITHUB DI SINI ---
 # Pastikan URL diawali dengan 'https://raw.githubusercontent.com/...'
-URL_OMSET = "https://raw.githubusercontent.com/username/repo/main/omset.parquet"
-URL_STOK = "https://raw.githubusercontent.com/username/repo/main/stok.parquet"
+URL_OMSET = "https://github.com/grandmitra/gmbdashboard/raw/refs/heads/main/omset.parquet"
+URL_STOK = "https://github.com/grandmitra/gmbdashboard/raw/refs/heads/main/omset.parquet"
 
 # 2. FUNGSI LOAD DATA (OPTIMASI PARQUET)
 @st.cache_data(ttl=3600)  # Data disimpan di cache selama 1 jam
