@@ -194,4 +194,5 @@ if check_password():
                          use_container_width=True, hide_index=True)
 
     except Exception as e:
-        st.error(f"Sistem Error: {e}")
+        st.error(f"Sistem Error: {e}").
+        
